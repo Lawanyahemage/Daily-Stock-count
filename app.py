@@ -7,7 +7,7 @@ import io
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(page_title="Multi-Style Stock Variance Dashboard", layout="wide")
-st.title("📊 Outlet Daily Multi-Style Stock Variance Dashboard")
+st.title("📊 Daily Multi-Style Stock Variance Dashboard")
 
 # --- DATABASE SETUP ---
 DB_NAME = "variance_history.db"
@@ -73,53 +73,52 @@ def process_scanned_data(file_or_text):
 
 
 # --- SIDEBAR CONTROLS ---
-st.sidebar.title("🛠️ Setup & Inputs")
+st.sidebar.title("🛠️ Daily Inputs")
 
-st.sidebar.subheader("📅 Step 1: Select Date")
+st.sidebar.subheader("📅 Date Selection")
 selected_date = st.sidebar.date_input("Report Date", datetime.date.today())
 
-st.sidebar.subheader("📂 Step 2: Upload ERP Style Files")
+st.sidebar.subheader("📂 1. Upload Style ERP Files (e.g. 5 files)")
 erp_files = st.sidebar.file_uploader(
-    "Upload Today's ERP Excel Files (e.g., 5 files)", 
+    "Upload today's ERP Style Files", 
     type=["xlsx", "xls"], 
     accept_multiple_files=True,
     key="erp_multi"
 )
 
-st.sidebar.subheader("📱 Step 3: Outlet Physical Scans")
+st.sidebar.subheader("📱 2. Outlet Daily Scanned Files")
 outlets = ["CCC", "COLOMBO 03", "NUGEGODA", "ONLINE", "WATTALA"]
 outlet_scans = {}
 
 for outlet in outlets:
-    with st.sidebar.expander(f"📍 {outlet} Input"):
-        tab1, tab2 = st.tabs(["📁 File Upload", "📋 Paste Codes"])
+    with st.sidebar.expander(f"📍 {outlet} (1 Combined File for All Styles)"):
+        tab1, tab2 = st.tabs(["📁 Upload File", "📋 Paste Codes"])
         with tab1:
-            u_file = st.file_uploader(f"File for {outlet}", type=["xlsx", "xls", "csv", "txt"], key=f"f_{outlet}")
+            u_file = st.file_uploader(f"Upload scanned file for {outlet}", type=["xlsx", "xls", "csv", "txt"], key=f"f_{outlet}")
         with tab2:
-            p_text = st.text_area(f"Paste text for {outlet}:", height=80, key=f"t_{outlet}")
+            p_text = st.text_area(f"Paste all barcodes for {outlet}:", height=80, key=f"t_{outlet}")
         
         if u_file:
             c = process_scanned_data(u_file)
             outlet_scans[outlet] = c
-            st.caption(f"✓ {len(c)} codes loaded from file")
+            st.caption(f"✓ {len(c)} total barcodes loaded from file")
         elif p_text:
             c = process_scanned_data(p_text)
             outlet_scans[outlet] = c
-            st.caption(f"✓ {len(c)} codes loaded from text")
+            st.caption(f"✓ {len(c)} total barcodes loaded from text")
 
 st.sidebar.markdown("---")
 
-# ALWAYS-VISIBLE ACTION BUTTON
-st.sidebar.subheader("⚙️ Step 4: Run Report")
+st.sidebar.subheader("⚙️ 3. Process Report")
 run_calc = st.sidebar.button("💾 Calculate & Save Daily Report", type="primary", use_container_width=True)
 
 
 # --- PROCESSING ACTION ---
 if run_calc:
     if not erp_files:
-        st.error("⚠️ Please upload at least one Raysoft ERP Excel file in Step 2 before calculating.")
+        st.error("⚠️ Please upload at least one Raysoft ERP file in Step 1.")
     else:
-        # Combine all ERP Files uploaded
+        # 1. Combine all uploaded ERP Style Files
         all_erp_dfs = []
         for f in erp_files:
             df_temp = pd.read_excel(f)
@@ -137,30 +136,33 @@ if run_calc:
         master_erp['Color'] = [x[0] for x in color_size_parsed]
         master_erp['Size'] = [x[1] for x in color_size_parsed]
 
-        # Aggregate Physical Scans
+        # 2. Aggregate Scanned Barcodes per Outlet (Matches all styles)
         scanned_records = []
         for loc, codes in outlet_scans.items():
-            counts = Counter(codes)
-            for code, count in counts.items():
-                scanned_records.append({
-                    'Location': loc,
-                    'Color Size Code': code,
-                    'Physical Qty': count
-                })
+            if codes:  # process only if codes exist
+                counts = Counter(codes)
+                for code, count in counts.items():
+                    scanned_records.append({
+                        'Location': loc,
+                        'Color Size Code': code,
+                        'Physical Qty': count
+                    })
+        
         scanned_df = pd.DataFrame(scanned_records)
 
-        # Merge ERP & Physical Scans
+        # 3. Outer Merge System Qty with Physical Scans
         if not scanned_df.empty:
             merged = pd.merge(master_erp, scanned_df, on=['Location', 'Color Size Code'], how='outer')
         else:
             merged = master_erp.copy()
             merged['Physical Qty'] = 0
 
+        # Fill Missing Values Cleanly
         merged['System Qty'] = merged['System Qty'].fillna(0)
         merged['Physical Qty'] = merged['Physical Qty'].fillna(0)
         merged['Variance'] = merged['Physical Qty'] - merged['System Qty']
 
-        # Save to SQLite Database
+        # 4. Save Snapshots to SQLite Database
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("DELETE FROM daily_variance WHERE date = ?", (str(selected_date),))
@@ -190,7 +192,7 @@ if run_calc:
 
 
 # --- DASHBOARD / VIEWING AREA ---
-st.header("🏢 Outlet-Wise Style Variance Analysis")
+st.header("🏢 Outlet-Wise Variance Dashboard")
 
 conn = sqlite3.connect(DB_NAME)
 available_dates = pd.read_sql_query("SELECT DISTINCT date FROM daily_variance ORDER BY date DESC", conn)
@@ -200,7 +202,7 @@ if not available_dates.empty:
     view_date = col_d.selectbox("Select Date to View", available_dates['date'].tolist())
     view_outlet = col_o.selectbox("Select Outlet Name", outlets)
 
-    # Fetch outlet filtered data from SQLite DB
+    # Fetch outlet filtered data
     query = f"""
         SELECT style_number as 'Style Number', 
                color_size_code as 'Color Size Code', 
@@ -250,4 +252,4 @@ if not available_dates.empty:
         st.info(f"No records found for {view_outlet} on {view_date}.")
 else:
     conn.close()
-    st.info("👈 Please upload your ERP files in the left sidebar, then click 'Calculate & Save Daily Report' to generate data.")
+    st.info("👈 Please upload ERP style files and outlet scan files in the left sidebar, then click 'Calculate & Save Daily Report'.")
