@@ -247,7 +247,7 @@ if not available_dates.empty:
 
         # Highlight variances in red
         st.dataframe(
-            color_summary.style.applymap(
+            color_summary.style.map(
                 lambda v: 'background-color: #ffcccc; color: #900c3f; font-weight: bold;' if v < 0 else ('background-color: #fff3cd; color: #856404; font-weight: bold;' if v > 0 else ''),
                 subset=['Variance']
             ),
