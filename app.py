@@ -24,30 +24,70 @@ st.set_page_config(page_title="Stock Variance Dashboard", layout="wide")
 def load_master(uploaded_file):
     if uploaded_file is None:
         return None
-    df = pd.read_csv(uploaded_file, sep=None, engine="python", header=None, names=["code", "name"])
+    name = uploaded_file.name.lower()
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        df = pd.read_excel(uploaded_file, header=None, names=["code", "name"])
+    else:
+        df = pd.read_csv(uploaded_file, sep=None, engine="python", header=None, names=["code", "name"])
     df["code"] = df["code"].astype(str).str.strip()
     return df.set_index("code")["name"].to_dict()
 
 
 def load_stock(uploaded_file):
-    df = pd.read_csv(uploaded_file, sep=None, engine="python")
-    df.columns = [c.strip() for c in df.columns]
-    df = df.rename(columns={
-        "Location": "location",
-        "Color Size Code": "code",
-        "Color Size Name": "name",
-        "Qty": "system_qty",
-    })
+    name = uploaded_file.name.lower()
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        df = pd.read_excel(uploaded_file)
+    else:
+        df = pd.read_csv(uploaded_file, sep=None, engine="python")
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # match columns case/spacing-insensitively so small naming differences don't break it
+    rename_map = {}
+    for col in df.columns:
+        key = col.lower().replace(" ", "").replace("_", "")
+        if key == "location":
+            rename_map[col] = "location"
+        elif key in ("colorsizecode", "coloursizecode"):
+            rename_map[col] = "code"
+        elif key in ("colorsizename", "coloursizename"):
+            rename_map[col] = "name"
+        elif key == "qty":
+            rename_map[col] = "system_qty"
+    df = df.rename(columns=rename_map)
+
+    required = {"location", "code", "system_qty"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(
+            f"Stock report is missing expected column(s): {', '.join(missing)}. "
+            f"Columns found in your file: {list(df.columns)}"
+        )
+
     df["code"] = df["code"].astype(str).str.strip()
     df["location"] = df["location"].astype(str).str.strip()
+    if "name" not in df.columns:
+        df["name"] = None
     return df
 
 
 def load_scan_counts(uploaded_file):
-    content = uploaded_file.getvalue().decode("utf-8", errors="ignore")
-    codes = [line.strip() for line in StringIO(content) if line.strip()]
-    s = pd.Series(codes, name="code")
-    counts = s.value_counts().rename("physical_qty").reset_index()
+    """
+    Accepts scanned codes from a plain text list (one code per line) OR from
+    an Excel file (codes scanned directly into a column, e.g. column A).
+    Only the first column is used; any header row or blank row is ignored.
+    """
+    name = uploaded_file.name.lower()
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        raw = pd.read_excel(uploaded_file, header=None)
+    else:
+        raw = pd.read_csv(uploaded_file, header=None, sep=None, engine="python")
+
+    codes = raw.iloc[:, 0].astype(str).str.strip()
+    codes = codes[codes != ""]
+    codes = codes[codes.str.contains(r"\d")]  # drops a stray header row like "Code"
+
+    counts = codes.value_counts().rename("physical_qty").reset_index()
     counts.columns = ["code", "physical_qty"]
     return counts
 
@@ -128,25 +168,28 @@ role = st.sidebar.radio("I am a:", ["Outlet Manager", "Admin (upload today's dat
 # ---- ADMIN VIEW: upload & process ----
 if role == "Admin (upload today's data)":
     st.sidebar.subheader("Upload today's files")
-    master_file = st.sidebar.file_uploader("Master color-size list (optional)", type=["csv", "txt"])
-    stock_file = st.sidebar.file_uploader("System stock report (required)", type=["csv", "txt"])
+    master_file = st.sidebar.file_uploader("Master color-size list (optional)", type=["csv", "txt", "xlsx"])
+    stock_file = st.sidebar.file_uploader("System stock report (required)", type=["csv", "txt", "xlsx"])
     scan_files = st.sidebar.file_uploader(
-        "Outlet scan files (one per outlet, filename = outlet code, e.g. CCC.txt)",
-        type=["csv", "txt"], accept_multiple_files=True,
+        "Outlet scan files (one per outlet, filename = outlet code, e.g. CCC.xlsx or CCC.txt)",
+        type=["csv", "txt", "xlsx"], accept_multiple_files=True,
     )
 
     if st.sidebar.button("Process today's data", type="primary"):
         if stock_file is None or not scan_files:
             st.sidebar.error("Please upload the stock report and at least one outlet scan file.")
         else:
-            master_dict = load_master(master_file)
-            stock_df = load_stock(stock_file)
-            sheets, summary, warnings = build_variance(stock_df, master_dict, scan_files)
-            st.session_state.sheets = sheets
-            st.session_state.summary = summary
-            for w in warnings:
-                st.sidebar.warning(w)
-            st.sidebar.success(f"Processed {len(scan_files)} outlet(s). Data is now live for everyone with the link.")
+            try:
+                master_dict = load_master(master_file)
+                stock_df = load_stock(stock_file)
+                sheets, summary, warnings = build_variance(stock_df, master_dict, scan_files)
+                st.session_state.sheets = sheets
+                st.session_state.summary = summary
+                for w in warnings:
+                    st.sidebar.warning(w)
+                st.sidebar.success(f"Processed {len(scan_files)} outlet(s). Data is now live for everyone with the link.")
+            except Exception as e:
+                st.sidebar.error(f"Couldn't process the files: {e}")
 
     st.info("Upload the 3 file types on the left and click **Process today's data**. "
             "Once processed, outlet managers can switch to 'Outlet Manager' view to see it.")
