@@ -118,7 +118,7 @@ if run_calc:
     if not erp_files:
         st.error("⚠️ Please upload at least one Raysoft ERP file in Step 1.")
     else:
-        # 1. Combine all uploaded ERP Style Files
+        # Combine uploaded ERP files
         all_erp_dfs = []
         for f in erp_files:
             df_temp = pd.read_excel(f)
@@ -136,10 +136,10 @@ if run_calc:
         master_erp['Color'] = [x[0] for x in color_size_parsed]
         master_erp['Size'] = [x[1] for x in color_size_parsed]
 
-        # 2. Aggregate Scanned Barcodes per Outlet (Matches all styles)
+        # Aggregate Physical Scans
         scanned_records = []
         for loc, codes in outlet_scans.items():
-            if codes:  # process only if codes exist
+            if codes:
                 counts = Counter(codes)
                 for code, count in counts.items():
                     scanned_records.append({
@@ -150,19 +150,18 @@ if run_calc:
         
         scanned_df = pd.DataFrame(scanned_records)
 
-        # 3. Outer Merge System Qty with Physical Scans
+        # Merge System Qty with Physical Scans
         if not scanned_df.empty:
             merged = pd.merge(master_erp, scanned_df, on=['Location', 'Color Size Code'], how='outer')
         else:
             merged = master_erp.copy()
             merged['Physical Qty'] = 0
 
-        # Fill Missing Values Cleanly
         merged['System Qty'] = merged['System Qty'].fillna(0)
         merged['Physical Qty'] = merged['Physical Qty'].fillna(0)
         merged['Variance'] = merged['Physical Qty'] - merged['System Qty']
 
-        # 4. Save Snapshots to SQLite Database
+        # Save to SQLite Database
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("DELETE FROM daily_variance WHERE date = ?", (str(selected_date),))
@@ -191,8 +190,8 @@ if run_calc:
         st.success(f"🎉 Report for {selected_date} successfully processed and saved!")
 
 
-# --- DASHBOARD / VIEWING AREA ---
-st.header("🏢 Outlet-Wise Variance Dashboard")
+# --- DASHBOARD & ANALYSIS AREA ---
+st.header("🏢 Outlet Summary & Variance Analysis")
 
 conn = sqlite3.connect(DB_NAME)
 available_dates = pd.read_sql_query("SELECT DISTINCT date FROM daily_variance ORDER BY date DESC", conn)
@@ -202,13 +201,13 @@ if not available_dates.empty:
     view_date = col_d.selectbox("Select Date to View", available_dates['date'].tolist())
     view_outlet = col_o.selectbox("Select Outlet Name", outlets)
 
-    # Fetch outlet filtered data
+    # Fetch outlet data
     query = f"""
-        SELECT style_number as 'Style Number', 
+        SELECT style_number as 'Style No', 
+               color as 'Color',
+               size as 'Size',
                color_size_code as 'Color Size Code', 
                color_size_name as 'Description', 
-               color as 'Color', 
-               size as 'Size', 
                system_qty as 'System Qty', 
                physical_qty as 'Physical Qty', 
                variance as 'Variance'
@@ -219,31 +218,81 @@ if not available_dates.empty:
     conn.close()
 
     if not outlet_df.empty:
-        st.subheader(f"📌 Style Summary: {view_outlet} ({view_date})")
-        style_summary = outlet_df.groupby('Style Number').agg(
+        # High-level metrics
+        total_sys = outlet_df['System Qty'].sum()
+        total_phys = outlet_df['Physical Qty'].sum()
+        total_var = outlet_df['Variance'].sum()
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total System Qty", total_sys)
+        m2.metric("Total Physical Qty", total_phys)
+        m3.metric("Overall Net Variance", total_var, delta_color="inverse")
+
+        st.markdown("---")
+
+        # --- SECTION 1: OVERALL SUMMARY BY STYLE NO & COLOR ---
+        st.subheader(f"📌 Overall Summary for {view_outlet} ({view_date})")
+        st.caption("Grouped by Style No & Color")
+
+        color_summary = outlet_df.groupby(['Style No', 'Color']).agg(
             System_Qty=('System Qty', 'sum'),
             Physical_Qty=('Physical Qty', 'sum'),
-            Net_Variance=('Variance', 'sum')
+            Variance=('Variance', 'sum')
         ).reset_index()
 
-        st.dataframe(style_summary, use_container_width=True)
+        color_summary.rename(columns={
+            'System_Qty': 'System Qty',
+            'Physical_Qty': 'Physical Qty'
+        }, inplace=True)
 
-        selected_style = st.selectbox(
-            "Select Style to Inspect Color/Size Breakdown:", 
-            ["All Styles"] + style_summary['Style Number'].tolist()
+        # Highlight variances in red
+        st.dataframe(
+            color_summary.style.applymap(
+                lambda v: 'background-color: #ffcccc; color: #900c3f; font-weight: bold;' if v < 0 else ('background-color: #fff3cd; color: #856404; font-weight: bold;' if v > 0 else ''),
+                subset=['Variance']
+            ),
+            use_container_width=True
         )
 
-        if selected_style != "All Styles":
-            detailed_df = outlet_df[outlet_df['Style Number'] == selected_style]
-        else:
-            detailed_df = outlet_df
+        st.markdown("---")
 
-        st.subheader(f"📋 Detailed Items Breakdown")
-        st.dataframe(detailed_df, use_container_width=True)
+        # --- SECTION 2: FILTERS & DETAILED BREAKDOWN ---
+        st.subheader("🔍 Filter & Inspect Color / Size Wise Details")
 
-        csv_out = detailed_df.to_csv(index=False).encode('utf-8')
+        f_col1, f_col2, f_col3 = st.columns(3)
+        
+        styles_list = ["All Styles"] + sorted([s for s in outlet_df['Style No'].unique() if s])
+        colors_list = ["All Colors"] + sorted([c for c in outlet_df['Color'].unique() if c and c != 'N/A'])
+        sizes_list = ["All Sizes"] + sorted([sz for sz in outlet_df['Size'].unique() if sz and sz != 'N/A'])
+
+        sel_style = f_col1.selectbox("Filter by Style No", styles_list)
+        sel_color = f_col2.selectbox("Filter by Color", colors_list)
+        sel_size = f_col3.selectbox("Filter by Size", sizes_list)
+
+        # Apply user filters
+        filtered_df = outlet_df.copy()
+        if sel_style != "All Styles":
+            filtered_df = filtered_df[filtered_df['Style No'] == sel_style]
+        if sel_color != "All Colors":
+            filtered_df = filtered_df[filtered_df['Color'] == sel_color]
+        if sel_size != "All Sizes":
+            filtered_df = filtered_df[filtered_df['Size'] == sel_size]
+
+        st.markdown("#### Detailed Variance Breakdown Table")
+        
+        # Render Detailed Table with Red Variance Highlighting
+        st.dataframe(
+            filtered_df.style.applymap(
+                lambda v: 'background-color: #ffcccc; color: #900c3f; font-weight: bold;' if v < 0 else ('background-color: #fff3cd; color: #856404; font-weight: bold;' if v > 0 else ''),
+                subset=['Variance']
+            ),
+            use_container_width=True
+        )
+
+        # CSV Download Button
+        csv_out = filtered_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label=f"📥 Download CSV Report for {view_outlet}",
+            label=f"📥 Download Detailed Report for {view_outlet} (CSV)",
             data=csv_out,
             file_name=f"{view_outlet}_variance_{view_date}.csv",
             mime="text/csv"
