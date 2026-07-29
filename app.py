@@ -9,7 +9,7 @@ import io
 st.set_page_config(page_title="Multi-Style Stock Variance Dashboard", layout="wide")
 st.title("📊 Outlet Daily Multi-Style Stock Variance Dashboard")
 
-# --- DATABASE SETUP (Free & Built-in SQLite) ---
+# --- DATABASE SETUP ---
 DB_NAME = "variance_history.db"
 
 def init_db():
@@ -36,19 +36,12 @@ init_db()
 
 # --- HELPER FUNCTIONS ---
 def extract_style_number(code_or_name):
-    """
-    Extracts the first 8-digit style number (e.g. '25933700' from '25933700009S06')
-    """
     str_val = str(code_or_name).strip()
     if len(str_val) >= 8 and str_val[:8].isdigit():
         return str_val[:8]
     return "UNKNOWN"
 
 def parse_color_size(name):
-    """
-    Extracts Color and Size from 'Color Size Name'
-    Example: '25933700 - WW PLEATING DRESS BEIGE-06' -> Color: BEIGE, Size: 06
-    """
     name = str(name)
     if '-' in name:
         parts = name.rsplit('-', 1)
@@ -58,9 +51,6 @@ def parse_color_size(name):
     return 'N/A', 'N/A'
 
 def process_scanned_data(file_or_text):
-    """
-    Reads stacked barcode strings from uploaded file or pasted text
-    """
     if file_or_text is None:
         return []
     
@@ -82,43 +72,53 @@ def process_scanned_data(file_or_text):
     return codes
 
 
-# --- SIDEBAR INPUTS ---
-st.sidebar.header("📅 Select Date")
+# --- SIDEBAR CONTROLS ---
+st.sidebar.title("🛠️ Setup & Inputs")
+
+st.sidebar.subheader("📅 Step 1: Select Date")
 selected_date = st.sidebar.date_input("Report Date", datetime.date.today())
 
-st.sidebar.header("1. Upload Daily Style Files")
+st.sidebar.subheader("📂 Step 2: Upload ERP Style Files")
 erp_files = st.sidebar.file_uploader(
-    "Upload today's 5 Style ERP Excel Files", 
+    "Upload Today's ERP Excel Files (e.g., 5 files)", 
     type=["xlsx", "xls"], 
     accept_multiple_files=True,
     key="erp_multi"
 )
 
-st.sidebar.header("2. Outlet Physical Scans")
+st.sidebar.subheader("📱 Step 3: Outlet Physical Scans")
 outlets = ["CCC", "COLOMBO 03", "NUGEGODA", "ONLINE", "WATTALA"]
 outlet_scans = {}
 
 for outlet in outlets:
-    with st.sidebar.expander(f"📍 {outlet} Scans"):
-        tab1, tab2 = st.tabs(["📁 Upload File", "📋 Paste Codes"])
+    with st.sidebar.expander(f"📍 {outlet} Input"):
+        tab1, tab2 = st.tabs(["📁 File Upload", "📋 Paste Codes"])
         with tab1:
-            u_file = st.file_uploader(f"Upload file for {outlet}", type=["xlsx", "xls", "csv", "txt"], key=f"f_{outlet}")
+            u_file = st.file_uploader(f"File for {outlet}", type=["xlsx", "xls", "csv", "txt"], key=f"f_{outlet}")
         with tab2:
-            p_text = st.text_area(f"Paste barcodes for {outlet}:", height=80, key=f"t_{outlet}")
+            p_text = st.text_area(f"Paste text for {outlet}:", height=80, key=f"t_{outlet}")
         
         if u_file:
             c = process_scanned_data(u_file)
             outlet_scans[outlet] = c
-            st.caption(f"✓ {len(c)} items loaded from file")
+            st.caption(f"✓ {len(c)} codes loaded from file")
         elif p_text:
             c = process_scanned_data(p_text)
             outlet_scans[outlet] = c
-            st.caption(f"✓ {len(c)} items loaded from text")
+            st.caption(f"✓ {len(c)} codes loaded from text")
+
+st.sidebar.markdown("---")
+
+# ALWAYS-VISIBLE ACTION BUTTON
+st.sidebar.subheader("⚙️ Step 4: Run Report")
+run_calc = st.sidebar.button("💾 Calculate & Save Daily Report", type="primary", use_container_width=True)
 
 
-# --- MAIN ACTION: PROCESS AND STORE TODAY'S DATA ---
-if erp_files:
-    if st.sidebar.button("💾 Calculate & Save Daily Report"):
+# --- PROCESSING ACTION ---
+if run_calc:
+    if not erp_files:
+        st.error("⚠️ Please upload at least one Raysoft ERP Excel file in Step 2 before calculating.")
+    else:
         # Combine all ERP Files uploaded
         all_erp_dfs = []
         for f in erp_files:
@@ -131,7 +131,7 @@ if erp_files:
         master_erp = pd.concat(all_erp_dfs, ignore_index=True)
         master_erp.rename(columns={'Qty': 'System Qty'}, inplace=True)
         
-        # Extract style, color, size
+        # Parse Style, Color, Size
         master_erp['Style Number'] = master_erp['Color Size Code'].apply(extract_style_number)
         color_size_parsed = master_erp['Color Size Name'].apply(parse_color_size)
         master_erp['Color'] = [x[0] for x in color_size_parsed]
@@ -149,7 +149,7 @@ if erp_files:
                 })
         scanned_df = pd.DataFrame(scanned_records)
 
-        # Merge ERP & Physical
+        # Merge ERP & Physical Scans
         if not scanned_df.empty:
             merged = pd.merge(master_erp, scanned_df, on=['Location', 'Color Size Code'], how='outer')
         else:
@@ -159,9 +159,8 @@ if erp_files:
         merged['System Qty'] = merged['System Qty'].fillna(0)
         merged['Physical Qty'] = merged['Physical Qty'].fillna(0)
         merged['Variance'] = merged['Physical Qty'] - merged['System Qty']
-        merged['Date'] = str(selected_date)
 
-        # Save to SQLite Database (replace old records for same date if re-calculated)
+        # Save to SQLite Database
         conn = sqlite3.connect(DB_NAME)
         c = conn.cursor()
         c.execute("DELETE FROM daily_variance WHERE date = ?", (str(selected_date),))
@@ -187,14 +186,12 @@ if erp_files:
         conn.commit()
         conn.close()
         
-        st.success(f"✅ Data for {selected_date} successfully processed and saved to Database!")
+        st.success(f"🎉 Report for {selected_date} successfully processed and saved!")
 
 
-# --- DASHBOARD & ANALYSIS SECTION ---
-st.markdown("---")
+# --- DASHBOARD / VIEWING AREA ---
 st.header("🏢 Outlet-Wise Style Variance Analysis")
 
-# Fetch dates saved in Database
 conn = sqlite3.connect(DB_NAME)
 available_dates = pd.read_sql_query("SELECT DISTINCT date FROM daily_variance ORDER BY date DESC", conn)
 
@@ -203,7 +200,7 @@ if not available_dates.empty:
     view_date = col_d.selectbox("Select Date to View", available_dates['date'].tolist())
     view_outlet = col_o.selectbox("Select Outlet Name", outlets)
 
-    # Query filtered data from DB
+    # Fetch outlet filtered data from SQLite DB
     query = f"""
         SELECT style_number as 'Style Number', 
                color_size_code as 'Color Size Code', 
@@ -220,8 +217,7 @@ if not available_dates.empty:
     conn.close()
 
     if not outlet_df.empty:
-        # Style Summary Metrics Table
-        st.subheader(f"📌 Style Summary for {view_outlet} on {view_date}")
+        st.subheader(f"📌 Style Summary: {view_outlet} ({view_date})")
         style_summary = outlet_df.groupby('Style Number').agg(
             System_Qty=('System Qty', 'sum'),
             Physical_Qty=('Physical Qty', 'sum'),
@@ -230,9 +226,8 @@ if not available_dates.empty:
 
         st.dataframe(style_summary, use_container_width=True)
 
-        # Style Selector for Detailed Inspection
         selected_style = st.selectbox(
-            "Select a Style to inspect Color & Size Variance:", 
+            "Select Style to Inspect Color/Size Breakdown:", 
             ["All Styles"] + style_summary['Style Number'].tolist()
         )
 
@@ -241,13 +236,12 @@ if not available_dates.empty:
         else:
             detailed_df = outlet_df
 
-        st.subheader(f"📋 Detailed Color & Size Breakdown ({selected_style})")
+        st.subheader(f"📋 Detailed Items Breakdown")
         st.dataframe(detailed_df, use_container_width=True)
 
-        # Download Report
         csv_out = detailed_df.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label=f"📥 Download Report for {view_outlet} ({view_date})",
+            label=f"📥 Download CSV Report for {view_outlet}",
             data=csv_out,
             file_name=f"{view_outlet}_variance_{view_date}.csv",
             mime="text/csv"
@@ -256,4 +250,4 @@ if not available_dates.empty:
         st.info(f"No records found for {view_outlet} on {view_date}.")
 else:
     conn.close()
-    st.info("👈 Upload daily style files and click 'Calculate & Save Daily Report' to store data.")
+    st.info("👈 Please upload your ERP files in the left sidebar, then click 'Calculate & Save Daily Report' to generate data.")
