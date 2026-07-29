@@ -49,7 +49,7 @@ def parse_color_size(name):
         color_part = parts[0].split('-')[-1].strip() if len(parts[0].split('-')) > 1 else 'N/A'
         return color_part, size
     return 'N/A', 'N/A'
-
+    
 def process_scanned_data(file_or_text):
     if file_or_text is None:
         return []
@@ -58,16 +58,17 @@ def process_scanned_data(file_or_text):
     if hasattr(file_or_text, 'name'):
         filename = file_or_text.name.lower()
         if filename.endswith(('.xlsx', '.xls')):
-            df_temp = pd.read_excel(file_or_text, header=None)
-            codes = df_temp.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+            # header=None reads ALL rows including row 1
+            df_temp = pd.read_excel(file_or_text, header=None) 
+            codes = df_temp.iloc[:, 0].dropna().astype(str).str.strip().str.upper().tolist()
         elif filename.endswith('.csv'):
             df_temp = pd.read_csv(file_or_text, header=None)
-            codes = df_temp.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+            codes = df_temp.iloc[:, 0].dropna().astype(str).str.strip().str.upper().tolist()
         elif filename.endswith('.txt'):
             stringio = io.StringIO(file_or_text.getvalue().decode("utf-8"))
-            codes = [line.strip() for line in stringio.readlines() if line.strip()]
+            codes = [line.strip().upper() for line in stringio.readlines() if line.strip()]
     elif isinstance(file_or_text, str):
-        codes = [line.strip() for line in file_or_text.split('\n') if line.strip()]
+        codes = [line.strip().upper() for line in file_or_text.split('\n') if line.strip()]
         
     return codes
 
