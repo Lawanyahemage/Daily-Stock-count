@@ -118,7 +118,6 @@ if run_calc:
     if not erp_files:
         st.error("⚠️ Please upload at least one Raysoft ERP file in Step 1.")
     else:
-        # Combine uploaded ERP files
         all_erp_dfs = []
         for f in erp_files:
             df_temp = pd.read_excel(f)
@@ -245,7 +244,7 @@ if not available_dates.empty:
             'Physical_Qty': 'Physical Qty'
         }, inplace=True)
 
-        # Highlight variances in red
+        # Highlight variances using pandas .map()
         st.dataframe(
             color_summary.style.map(
                 lambda v: 'background-color: #ffcccc; color: #900c3f; font-weight: bold;' if v < 0 else ('background-color: #fff3cd; color: #856404; font-weight: bold;' if v > 0 else ''),
@@ -280,9 +279,9 @@ if not available_dates.empty:
 
         st.markdown("#### Detailed Variance Breakdown Table")
         
-        # Render Detailed Table with Red Variance Highlighting
+        # Render Detailed Table using pandas .map()
         st.dataframe(
-            filtered_df.style.applymap(
+            filtered_df.style.map(
                 lambda v: 'background-color: #ffcccc; color: #900c3f; font-weight: bold;' if v < 0 else ('background-color: #fff3cd; color: #856404; font-weight: bold;' if v > 0 else ''),
                 subset=['Variance']
             ),
