@@ -1,121 +1,173 @@
 import streamlit as st
 import pandas as pd
 from collections import Counter
+import io
 
-# Set up page layout
-st.set_page_config(page_title="Stock Variance Automation", layout="wide")
+st.set_page_config(page_title="Outlet Stock Variance Dashboard", layout="wide")
 st.title("📦 Outlet Daily Stock Variance Dashboard")
 
-# --- 1. PROCESSING FUNCTION ---
-def process_daily_variance(erp_excel_path, outlet_scans_dict):
+# --- DATA PROCESSING FUNCTION ---
+def process_scanned_data(file_or_text, location_name):
     """
-    Processes ERP stock file and scanned barcodes to calculate variance.
+    Parses scanned codes from either uploaded files (.xlsx, .csv, .txt) 
+    or pasted text and counts occurrences.
     """
-    # Read ERP stock Excel file
-    erp_df = pd.read_excel(erp_excel_path)
+    codes = []
     
-    # Clean up column names and drop extra index column if present
+    if file_or_text is None:
+        return []
+    
+    # Check if input is an uploaded file
+    if hasattr(file_or_text, 'name'):
+        filename = file_or_text.name.lower()
+        if filename.endswith(('.xlsx', '.xls')):
+            # Read without header so top row code isn't lost
+            df_temp = pd.read_excel(file_or_text, header=None)
+            codes = df_temp.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+        elif filename.endswith('.csv'):
+            df_temp = pd.read_csv(file_or_text, header=None)
+            codes = df_temp.iloc[:, 0].dropna().astype(str).str.strip().tolist()
+        elif filename.endswith('.txt'):
+            stringio = io.StringIO(file_or_text.getvalue().decode("utf-8"))
+            codes = [line.strip() for line in stringio.readlines() if line.strip()]
+    elif isinstance(file_or_text, str):
+        # Handle pasted raw text
+        codes = [line.strip() for line in file_or_text.split('\n') if line.strip()]
+        
+    return codes
+
+def parse_color_size(row):
+    """
+    Extracts Color and Size cleanly from 'Color Size Name'
+    Example: '25933700 - WW PLEATING DRESS BEIGE-06' -> Color: BEIGE, Size: 06
+    """
+    name = str(row.get('Color Size Name', ''))
+    if '-' in name:
+        parts = name.rsplit('-', 1)
+        size = parts[-1].strip()
+        color_part = parts[0].split('-')[-1].strip() if len(parts[0].split('-')) > 1 else ''
+        return pd.Series([color_part, size])
+    return pd.Series(['N/A', 'N/A'])
+
+
+# --- SIDEBAR CONTROLS ---
+st.sidebar.header("1. System Master Stock File")
+erp_file = st.sidebar.file_uploader("Upload Raysoft ERP File (.xlsx)", type=["xlsx", "xls"], key="erp")
+
+st.sidebar.header("2. Outlet Scans (Upload File OR Paste)")
+outlets = ["CCC", "COLOMBO 03", "NUGEGODA", "ONLINE", "WATTALA"]
+outlet_scans = {}
+
+for outlet in outlets:
+    with st.sidebar.expander(f"📍 {outlet} Data Entry"):
+        tab1, tab2 = st.tabs(["📁 Upload File", "📋 Paste Codes"])
+        
+        with tab1:
+            uploaded_scans = st.file_uploader(
+                f"Upload scan file for {outlet}", 
+                type=["xlsx", "xls", "csv", "txt"], 
+                key=f"file_{outlet}"
+            )
+        
+        with tab2:
+            pasted_text = st.text_area(
+                f"Paste barcode lines for {outlet}:", 
+                height=100, 
+                key=f"text_{outlet}"
+            )
+        
+        # Priority: File input if available, otherwise pasted text
+        if uploaded_scans:
+            codes = process_scanned_data(uploaded_scans, outlet)
+            outlet_scans[outlet] = codes
+            st.success(f"Loaded {len(codes)} scanned items from file.")
+        elif pasted_text:
+            codes = process_scanned_data(pasted_text, outlet)
+            outlet_scans[outlet] = codes
+            st.success(f"Loaded {len(codes)} scanned items from pasted text.")
+
+
+# --- MAIN APPLICATION LOGIC ---
+if erp_file:
+    # 1. Read ERP Master Data
+    erp_df = pd.read_excel(erp_file)
     erp_df.columns = erp_df.columns.str.strip()
     if 'Unnamed: 0' in erp_df.columns:
         erp_df = erp_df.drop(columns=['Unnamed: 0'])
-        
     erp_df.rename(columns={'Qty': 'System Qty'}, inplace=True)
 
-    # Convert scanned lists into counted DataFrames
-    scanned_list = []
-    for location, barcodes in outlet_scans_dict.items():
-        counts = Counter([b.strip() for b in barcodes if b.strip()])
+    # 2. Extract Color and Size attributes
+    erp_df[['Color', 'Size']] = erp_df.apply(parse_color_size, axis=1)
+
+    # 3. Process Physical Outlet Scans
+    scanned_records = []
+    for loc, codes in outlet_scans.items():
+        counts = Counter(codes)
         for code, count in counts.items():
-            scanned_list.append({
-                'Location': location.strip(),
+            scanned_records.append({
+                'Location': loc,
                 'Color Size Code': code,
                 'Physical Qty': count
             })
-            
-    scanned_df = pd.DataFrame(scanned_list)
 
-    # Full outer merge to catch mismatches
+    scanned_df = pd.DataFrame(scanned_records)
+
+    # 4. Merge ERP and Physical Scans
     if not scanned_df.empty:
-        merged_df = pd.merge(
-            erp_df, 
-            scanned_df, 
-            on=['Location', 'Color Size Code'], 
-            how='outer'
-        )
+        merged_df = pd.merge(erp_df, scanned_df, on=['Location', 'Color Size Code'], how='outer')
     else:
         merged_df = erp_df.copy()
         merged_df['Physical Qty'] = 0
 
-    # Fill missing quantities with 0
     merged_df['System Qty'] = merged_df['System Qty'].fillna(0)
     merged_df['Physical Qty'] = merged_df['Physical Qty'].fillna(0)
-
-    # Compute Variance: (Physical Scanned - System Expected)
     merged_df['Variance'] = merged_df['Physical Qty'] - merged_df['System Qty']
 
-    # Status Flag
-    def categorize(var):
-        if var == 0:
-            return "MATCHED"
-        elif var > 0:
-            return "SURPLUS (+)"
-        else:
-            return "SHORTAGE (-)"
+    # 5. Dashboard Summary KPI Cards
+    st.subheader("📊 Key Metrics Summary")
+    kpi1, kpi2, kpi3 = st.columns(3)
+    kpi1.metric("Total System Stock", int(merged_df['System Qty'].sum()))
+    kpi2.metric("Total Physical Scanned", int(merged_df['Physical Qty'].sum()))
+    kpi3.metric("Net Variance", int(merged_df['Variance'].sum()))
 
-    merged_df['Status'] = merged_df['Variance'].apply(categorize)
+    st.markdown("---")
 
-    return merged_df
-
-
-# --- 2. STREAMLIT USER INTERFACE ---
-
-# Sidebar - Step 1: Upload ERP Data
-st.sidebar.header("1. Upload System File")
-erp_file = st.sidebar.file_uploader("Upload Raysoft Stock File (.xlsx)", type=["xlsx", "xls"])
-
-# Sidebar - Step 2: Input Scanned Barcodes
-st.sidebar.header("2. Input Scanned Barcodes")
-outlets = ["CCC", "COLOMBO 03", "NUGEGODA", "ONLINE", "WATTALA"]
-scanned_inputs = {}
-
-for outlet in outlets:
-    with st.sidebar.expander(f"Scans for {outlet}"):
-        raw_text = st.text_area(f"Paste barcodes for {outlet}:", height=120, key=outlet)
-        if raw_text:
-            codes = [line.strip() for line in raw_text.split("\n") if line.strip()]
-            scanned_inputs[outlet] = codes
-
-# Main Page Display
-if erp_file:
-    # Run calculations
-    results_df = process_daily_variance(erp_file, scanned_inputs)
+    # 6. Interactive Filters
+    st.subheader("🔍 Filter Report")
+    f_col1, f_col2, f_col3 = st.columns(3)
     
-    # Filter options
-    selected_outlet = st.selectbox("Filter Results by Location", ["All Locations"] + outlets)
-    if selected_outlet != "All Locations":
-        view_df = results_df[results_df['Location'] == selected_outlet]
-    else:
-        view_df = results_df
+    selected_outlet = f_col1.selectbox("Filter Outlet", ["All Outlets"] + outlets)
+    colors_available = ["All Colors"] + [c for c in merged_df['Color'].dropna().unique() if c != 'N/A']
+    selected_color = f_col2.selectbox("Filter Color", colors_available)
+    
+    sizes_available = ["All Sizes"] + [s for s in merged_df['Size'].dropna().unique() if s != 'N/A']
+    selected_size = f_col3.selectbox("Filter Size", sizes_available)
 
-    # Summary Metrics
-    st.subheader("Summary Metrics")
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total System Qty", int(view_df['System Qty'].sum()))
-    col2.metric("Total Scanned Qty", int(view_df['Physical Qty'].sum()))
-    col3.metric("Net Discrepancy", int(view_df['Variance'].sum()))
+    # Apply Filters
+    filtered_df = merged_df.copy()
+    if selected_outlet != "All Outlets":
+        filtered_df = filtered_df[filtered_df['Location'] == selected_outlet]
+    if selected_color != "All Colors":
+        filtered_df = filtered_df[filtered_df['Color'] == selected_color]
+    if selected_size != "All Sizes":
+        filtered_df = filtered_df[filtered_df['Size'] == selected_size]
 
-    # Detailed Table
-    st.subheader("Variance Breakdown")
-    st.dataframe(view_df, use_container_width=True)
+    # 7. Display Main Table
+    st.subheader("📋 Color, Size & Outlet-wise Variance Matrix")
+    
+    display_cols = ['Location', 'Color Size Code', 'Color Size Name', 'Color', 'Size', 'System Qty', 'Physical Qty', 'Variance']
+    available_display_cols = [c for c in display_cols if c in filtered_df.columns]
+    
+    st.dataframe(filtered_df[available_display_cols], use_container_width=True)
 
-    # Download button for export
-    csv_data = view_df.to_csv(index=False).encode('utf-8')
+    # 8. Export Option
+    csv_bytes = filtered_df[available_display_cols].to_csv(index=False).encode('utf-8')
     st.download_button(
-        label="📥 Download Variance Report (CSV)",
-        data=csv_data,
-        file_name="daily_variance_report.csv",
+        label="📥 Download Detailed Report (CSV)",
+        data=csv_bytes,
+        file_name="outlet_color_size_variance.csv",
         mime="text/csv"
     )
 
 else:
-    st.info("👈 Please upload the Raysoft ERP stock file in the sidebar to get started.")
+    st.info("👈 Please upload the Raysoft ERP stock file in the left sidebar to generate reports.")
