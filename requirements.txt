@@ -1,3 +1,4 @@
 streamlit==1.40.0
-starlette==0.41.2
-pandas==2.2.0
+pandas==2.2.2
+openpyxl==3.1.5
+starlette==0.41.3
